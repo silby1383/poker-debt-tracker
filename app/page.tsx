@@ -3,7 +3,14 @@
 import * as React from "react";
 import { createClient } from "@/lib/supabase/client";
 
-type Currency = "USD" | "EUR" | "GBP" | "CAD" | "AUD";
+const DEBUG = false;
+const debug = (...args: unknown[]) => {
+  if (!DEBUG) return;
+  // eslint-disable-next-line no-console
+  console.log(...args);
+};
+
+type Currency = "USD";
 
 type Player = {
   id: string;
@@ -50,22 +57,48 @@ type KnownSession = {
   lastOpenedAtIso: string;
 };
 
-const CURRENCY_OPTIONS: Array<{ code: Currency; label: string; symbol: string }> =
-  [
-    { code: "USD", label: "US Dollar (USD)", symbol: "$" },
-    { code: "EUR", label: "Euro (EUR)", symbol: "€" },
-    { code: "GBP", label: "British Pound (GBP)", symbol: "£" },
-    { code: "CAD", label: "Canadian Dollar (CAD)", symbol: "$" },
-    { code: "AUD", label: "Australian Dollar (AUD)", symbol: "$" },
-  ];
+type PlayersTemplateV1 = {
+  version: 1;
+  names: string[];
+};
 
 const LOCAL_STORAGE_KEY = "poker:currentSession:v1";
 const KNOWN_SESSIONS_KEY = "poker:knownSessions:v1";
+const LAST_PLAYERS_KEY = "poker:lastPlayers:v1";
+
+const CURRENCY: Currency = "USD";
+const CURRENCY_SYMBOL = "$";
+const DEFAULT_BUY_IN = "20";
+
+const DEFAULT_PLAYER_NAMES = ["Alex", "Jordan", "Sam"] as const;
 
 function newId() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `p_${Math.random().toString(16).slice(2)}`;
+}
+
+function safeJsonParse<T>(raw: string | null): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function buildPlayersFromNames(names: string[]): Player[] {
+  const normalized = names.length > 0 ? names : [...DEFAULT_PLAYER_NAMES];
+  return normalized.map((name) => ({ id: newId(), name }));
+}
+
+function loadLastPlayerNames(): string[] | null {
+  if (typeof window === "undefined") return null;
+  const parsed = safeJsonParse<PlayersTemplateV1>(localStorage.getItem(LAST_PLAYERS_KEY));
+  if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.names)) return null;
+  if (parsed.names.length === 0) return null;
+  // Keep blanks too, but require at least 1 entry to be meaningful
+  return parsed.names.map((n) => (typeof n === "string" ? n : ""));
 }
 
 function initials(name: string) {
@@ -92,19 +125,14 @@ function parseAmountToCents(raw: string): number | null {
   return Math.round(n * 100);
 }
 
-function safeJsonParse<T>(raw: string | null): T | null {
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-}
-
 function loadKnownSessions(): KnownSession[] {
-  const parsed = safeJsonParse<KnownSession[]>(localStorage.getItem(KNOWN_SESSIONS_KEY));
+  const parsed = safeJsonParse<KnownSession[]>(
+    localStorage.getItem(KNOWN_SESSIONS_KEY)
+  );
   if (!parsed) return [];
-  return parsed.filter((s) => Boolean(s?.id) && Boolean(s?.token));
+  return parsed
+    .filter((s) => Boolean(s?.id) && Boolean(s?.token))
+    .map((s) => ({ ...s, currency: CURRENCY }));
 }
 
 function isUuid(v: string) {
@@ -164,48 +192,43 @@ function generateSessionTokenHex(bytes = 16) {
 }
 
 function toError(err: unknown): Error {
-  if (err instanceof Error) return err
-  if (typeof err === 'string') return new Error(err)
+  if (err instanceof Error) return err;
+  if (typeof err === "string") return new Error(err);
 
-  const maybeMessage = (err as { message?: unknown } | null)?.message
-  if (typeof maybeMessage === 'string') return new Error(maybeMessage)
+  const maybeMessage = (err as { message?: unknown } | null)?.message;
+  if (typeof maybeMessage === "string") return new Error(maybeMessage);
 
   try {
-    return new Error(JSON.stringify(err))
+    return new Error(JSON.stringify(err));
   } catch {
-    return new Error(String(err))
+    return new Error(String(err));
   }
 }
 
 export default function Home() {
-  // FIX: define sessionToken/sessionId BEFORE any useMemo/useEffect that reads them
+  // Ensures server + first client render match (prevents hydration mismatch),
+  // while still letting us update after hydration.
+  const [isHydrated, setIsHydrated] = React.useState(false);
+  React.useEffect(() => setIsHydrated(true), []);
+
   const [sessionId, setSessionId] = React.useState<string | null>(null);
   const [sessionToken, setSessionToken] = React.useState<string | null>(null);
-
-  // two clients:
-  // - anon: used to INSERT (allowed without token)
-  // - authed-by-link: used for SELECT/UPDATE/DELETE (requires token)
-  const supabaseAnon = React.useMemo(() => createClient(), []);
-  const supabase = React.useMemo(
-    () => createClient(sessionToken ?? undefined),
-    [sessionToken]
-  );
 
   const [view, setView] = React.useState<"setup" | "game" | "cashout" | "settle">(
     "setup"
   );
 
   const [sessionName, setSessionName] = React.useState("");
-  const [currency, setCurrency] = React.useState<Currency>("USD");
-  const [players, setPlayers] = React.useState<Player[]>([
-    { id: newId(), name: "Alex" },
-    { id: newId(), name: "Jordan" },
-    { id: newId(), name: "Sam" },
-  ]);
+
+  // IMPORTANT: keep initial render deterministic (no localStorage).
+  // Also avoid passing [] here (which will fallback), so it's obvious it's the default.
+  const [players, setPlayers] = React.useState<Player[]>(() =>
+    buildPlayersFromNames([...DEFAULT_PLAYER_NAMES])
+  );
 
   const [buyIns, setBuyIns] = React.useState<BuyIn[]>([]);
   const [quickPlayerId, setQuickPlayerId] = React.useState<string>("");
-  const [quickAmount, setQuickAmount] = React.useState<string>("");
+  const [quickAmount, setQuickAmount] = React.useState<string>(DEFAULT_BUY_IN);
   const [quickNote, setQuickNote] = React.useState<string>("");
 
   const [amountDraftByPlayerId, setAmountDraftByPlayerId] = React.useState<
@@ -220,12 +243,27 @@ export default function Home() {
   const [isSettled, setIsSettled] = React.useState(false);
   const [isStarting, setIsStarting] = React.useState(false);
   const [isSyncing, setIsSyncing] = React.useState(false);
-  const [shareStatus, setShareStatus] = React.useState<
-    "idle" | "copied" | "failed"
-  >("idle");
+  const [shareStatus, setShareStatus] = React.useState<"idle" | "copied" | "failed">(
+    "idle"
+  );
 
   const [knownSessions, setKnownSessions] = React.useState<KnownSession[]>([]);
-  const [loadSessionError, setLoadSessionError] = React.useState<string | null>(null);
+  const [loadSessionError, setLoadSessionError] = React.useState<string | null>(
+    null
+  );
+
+  const playersCountForPreview = isHydrated ? players.length : DEFAULT_PLAYER_NAMES.length;
+
+  // Remember last-used player names (for "New Game")
+  React.useEffect(() => {
+    try {
+      const payload: PlayersTemplateV1 = { version: 1, names: players.map((p) => p.name) };
+      localStorage.setItem(LAST_PLAYERS_KEY, JSON.stringify(payload));
+      debug("[Save last player names] Saved last player names", { payload });
+    } catch {
+      // ignore
+    }
+  }, [players]);
 
   // Load known sessions on mount
   React.useEffect(() => {
@@ -237,23 +275,19 @@ export default function Home() {
     localStorage.setItem(KNOWN_SESSIONS_KEY, JSON.stringify(knownSessions));
   }, [knownSessions]);
 
-  const upsertKnownSession = React.useCallback(
-    (s: KnownSession) => {
-      setKnownSessions((prev) => {
-        const next = prev.filter((x) => x.id !== s.id);
-        next.unshift(s);
-        return next.slice(0, 25);
-      });
-    },
-    [setKnownSessions]
-  );
+  const upsertKnownSession = React.useCallback((s: KnownSession) => {
+    setKnownSessions((prev) => {
+      const next = prev.filter((x) => x.id !== s.id);
+      next.unshift(s);
+      return next.slice(0, 25);
+    });
+    debug("[upsertKnownSession] Added/updated known session", { session: s });
+  }, []);
 
-  const removeKnownSession = React.useCallback(
-    (id: string) => {
-      setKnownSessions((prev) => prev.filter((x) => x.id !== id));
-    },
-    [setKnownSessions]
-  );
+  const removeKnownSession = React.useCallback((id: string) => {
+    setKnownSessions((prev) => prev.filter((x) => x.id !== id));
+    debug("[removeKnownSession] Removed known session", { id });
+  }, []);
 
   async function openSessionByIdAndToken(opts: {
     id: string;
@@ -270,8 +304,16 @@ export default function Home() {
         .eq("id", opts.id)
         .maybeSingle();
 
-      if (error) throw toError(error)
-      if (!data) throw new Error('Session not found (invalid id/token or missing access_token)')
+      debug("[openSessionByIdAndToken] Fetched session", {
+        id: opts.id,
+        hasToken: Boolean(opts.token),
+        error,
+        hasData: Boolean(data),
+      });
+
+      if (error) throw toError(error);
+      if (!data)
+        throw new Error("Session not found (invalid id/token or missing access_token)");
 
       const state = data.state as PersistedStateV1;
       if (!state || state.version !== 1) throw new Error("Unsupported session format");
@@ -280,37 +322,35 @@ export default function Home() {
       setSessionToken(opts.token);
 
       setSessionName(state.sessionName ?? (data.name ?? ""));
-      setCurrency((state.currency ?? (data.currency as Currency)) as Currency);
       setPlayers(state.players ?? []);
       setBuyIns(state.buyIns ?? []);
       setCashOutDraftByPlayerId(state.cashOutDraftByPlayerId ?? {});
       setIsFinalized(Boolean(state.isFinalized));
       setIsSettled(Boolean(state.isSettled));
 
-      // user asked specifically to jump to cash-outs for older sessions
       setView(opts.targetView);
+
+      debug("[openSessionByIdAndToken] Session state set", {
+        view: opts.targetView,
+        players: state.players,
+      });
 
       upsertKnownSession({
         id: opts.id,
         token: opts.token,
         name: (state.sessionName ?? data.name ?? "").trim() || "Poker Night",
-        currency: (state.currency ?? (data.currency as Currency)) as Currency,
+        currency: CURRENCY,
         lastOpenedAtIso: new Date().toISOString(),
       });
     } catch (e) {
-      setLoadSessionError(
-        e instanceof Error ? e.message : "Failed to load that session"
-      );
+      setLoadSessionError(e instanceof Error ? e.message : "Failed to load that session");
     }
   }
 
-  const currencySymbol = React.useMemo(
-    () => CURRENCY_OPTIONS.find((c) => c.code === currency)?.symbol ?? "$",
-    [currency]
-  );
+  const currencySymbol = CURRENCY_SYMBOL;
+  const currency = CURRENCY;
 
-  const canStart =
-    players.filter((p) => p.name.trim().length > 0).length >= 2;
+  const canStart = players.filter((p) => p.name.trim().length > 0).length >= 2;
 
   const totalsByPlayerId = React.useMemo(() => {
     const totals: Record<string, number> = {};
@@ -351,10 +391,7 @@ export default function Home() {
 
   const sessionTitle = sessionName.trim() || "Poker Night";
 
-  const namedPlayers = React.useMemo(
-    () => players.filter((p) => p.name.trim()),
-    [players]
-  );
+  const namedPlayers = React.useMemo(() => players.filter((p) => p.name.trim()), [players]);
 
   const payments = React.useMemo(() => {
     return computeSettlementPayments(namedPlayers, netByPlayerId);
@@ -367,41 +404,47 @@ export default function Home() {
       version: 1,
       view,
       sessionName,
-      currency,
+      currency: CURRENCY,
       players,
       buyIns,
       cashOutDraftByPlayerId,
       isFinalized,
       isSettled,
     }),
-    [
-      buyIns,
-      cashOutDraftByPlayerId,
-      currency,
-      isFinalized,
-      isSettled,
-      players,
-      sessionName,
-      view,
-    ]
+    [buyIns, cashOutDraftByPlayerId, isFinalized, isSettled, players, sessionName, view]
   );
 
-  // Restore from local snapshot on first load (crash recovery)
+  // Restore from local snapshot on first load (crash recovery).
+  // If there's no snapshot, seed the setup screen from the last used player names (localStorage).
   React.useEffect(() => {
     const snap = safeJsonParse<LocalSnapshot>(localStorage.getItem(LOCAL_STORAGE_KEY));
-    if (!snap || !snap.state || snap.state.version !== 1) return;
+    if (snap && snap.state && snap.state.version === 1) {
+      setSessionId(snap.sessionId);
+      setSessionToken(snap.sessionToken);
 
-    setSessionId(snap.sessionId);
-    setSessionToken(snap.sessionToken);
+      setView(snap.state.view);
+      setSessionName(snap.state.sessionName);
+      setPlayers(snap.state.players);
+      setBuyIns(snap.state.buyIns);
+      setCashOutDraftByPlayerId(snap.state.cashOutDraftByPlayerId);
+      setIsFinalized(snap.state.isFinalized);
+      setIsSettled(snap.state.isSettled);
 
-    setView(snap.state.view);
-    setSessionName(snap.state.sessionName);
-    setCurrency(snap.state.currency);
-    setPlayers(snap.state.players);
-    setBuyIns(snap.state.buyIns);
-    setCashOutDraftByPlayerId(snap.state.cashOutDraftByPlayerId);
-    setIsFinalized(snap.state.isFinalized);
-    setIsSettled(snap.state.isSettled);
+      debug("[Restore snapshot] Restored session", {
+        sessionId: snap.sessionId,
+        hasToken: Boolean(snap.sessionToken),
+        view: snap.state.view,
+        players: snap.state.players,
+      });
+
+      return;
+    }
+
+    const lastNames = loadLastPlayerNames();
+    if (lastNames && lastNames.length > 0) {
+      setPlayers(buildPlayersFromNames(lastNames));
+      debug("[Restore last player names] Loaded last player names", { lastNames });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -416,14 +459,14 @@ export default function Home() {
           id: sessionId,
           token: sessionToken,
           name: sessionName.trim() || "Poker Night",
-          currency,
+          currency: CURRENCY,
           lastOpenedAtIso: new Date().toISOString(),
         });
       }
     }, 250);
 
     return () => window.clearTimeout(t);
-  }, [persistableState, sessionId, sessionToken, sessionName, currency, upsertKnownSession]);
+  }, [persistableState, sessionId, sessionToken, sessionName, upsertKnownSession]);
 
   // Background sync to Supabase (debounced) — requires BOTH id + token
   React.useEffect(() => {
@@ -432,12 +475,12 @@ export default function Home() {
     const t = window.setTimeout(async () => {
       setIsSyncing(true);
       try {
-        const client = createClient(sessionToken);
+        const client = createClient({ sessionToken });
         await client
           .from("poker_sessions")
           .update({
             name: sessionName.trim() ? sessionName.trim() : null,
-            currency,
+            currency: CURRENCY,
             state: persistableState,
           })
           .eq("id", sessionId);
@@ -447,13 +490,7 @@ export default function Home() {
     }, 900);
 
     return () => window.clearTimeout(t);
-  }, [
-    currency,
-    persistableState,
-    sessionId,
-    sessionName,
-    sessionToken,
-  ]);
+  }, [persistableState, sessionId, sessionName, sessionToken]);
 
   // Fetch latest from Supabase once if we have id + token
   React.useEffect(() => {
@@ -463,7 +500,7 @@ export default function Home() {
 
     (async () => {
       try {
-        const client = createClient(sessionToken);
+        const client = createClient({ sessionToken });
         const { data } = await client
           .from("poker_sessions")
           .select("state, name, currency")
@@ -477,7 +514,6 @@ export default function Home() {
 
         setView(state.view);
         setSessionName(state.sessionName ?? (data.name ?? ""));
-        setCurrency((state.currency ?? (data.currency as Currency)) as Currency);
         setPlayers(state.players ?? []);
         setBuyIns(state.buyIns ?? []);
         setCashOutDraftByPlayerId(state.cashOutDraftByPlayerId ?? {});
@@ -507,7 +543,7 @@ export default function Home() {
 
     (async () => {
       try {
-        const client = createClient(t);
+        const client = createClient({ sessionToken: t });
         const { data } = await client
           .from("poker_sessions")
           .select("state, name, currency")
@@ -524,7 +560,6 @@ export default function Home() {
 
         setView(state.view);
         setSessionName(state.sessionName ?? (data.name ?? ""));
-        setCurrency((state.currency ?? (data.currency as Currency)) as Currency);
         setPlayers(state.players ?? []);
         setBuyIns(state.buyIns ?? []);
         setCashOutDraftByPlayerId(state.cashOutDraftByPlayerId ?? {});
@@ -538,7 +573,6 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-    // Only on first mount: if user later changes URL, we don't auto-teleport sessions.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -548,8 +582,6 @@ export default function Home() {
     const token = sessionToken ?? generateSessionTokenHex(16);
     const id = crypto.randomUUID(); // we generate the id so we don't need RETURNING
 
-    // Use a token-scoped client, but IMPORTANTLY: don't request "returning representation"
-    // (it can trigger SELECT RLS on the inserted row).
     const client = createClient({ sessionToken: token });
 
     const { error } = await client.from("poker_sessions").insert(
@@ -557,16 +589,13 @@ export default function Home() {
         id,
         access_token: token,
         name: sessionName || null,
-        currency,
+        currency: CURRENCY,
         state: persistableState,
       },
       { returning: "minimal" }
     );
 
-    console.log(
-      `[ensureSessionRow] Insert result. error: ${JSON.stringify(error)}`
-    )
-    if (error) throw toError(error)
+    if (error) throw toError(error);
 
     setSessionId(id);
     setSessionToken(token);
@@ -575,7 +604,7 @@ export default function Home() {
       id,
       token,
       name: sessionName.trim() || "Poker Night",
-      currency,
+      currency: CURRENCY,
       lastOpenedAtIso: new Date().toISOString(),
     });
 
@@ -653,11 +682,11 @@ export default function Home() {
               ) : null}
             </div>
             <h1 className="text-balance text-3xl font-semibold tracking-tight md:text-4xl">
-              Track buy-ins, cash-outs, and who owes who—without the chaos.
+              Silberlicht Poker Tally App
             </h1>
             <p className="max-w-2xl text-sm leading-relaxed text-neutral-300 md:text-base">
               {view === "setup"
-                ? "Create a session, pick a currency, and add players. (Buy-ins and results come next.)"
+                ? "Create a session, and add players. (Buy-ins and results come next.)"
                 : view === "game"
                   ? "Record buy-ins as the game runs. Totals update instantly."
                   : view === "cashout"
@@ -671,19 +700,20 @@ export default function Home() {
               type="button"
               className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-neutral-200 hover:bg-white/10 sm:w-auto"
               onClick={() => {
+                const namesForNextGame = players.map((p) => p.name);
+                const nextPlayers = buildPlayersFromNames(namesForNextGame);
+
+                debug("[New Game] Reset to setup", { nextPlayers });
+
                 setView("setup");
                 setSessionId(null);
                 setSessionToken(null);
                 setSessionName("");
-                setCurrency("USD");
-                setPlayers([
-                  { id: newId(), name: "Alex" },
-                  { id: newId(), name: "Jordan" },
-                  { id: newId(), name: "Sam" },
-                ]);
+
+                setPlayers(nextPlayers);
                 setBuyIns([]);
                 setQuickPlayerId("");
-                setQuickAmount("");
+                setQuickAmount(DEFAULT_BUY_IN);
                 setQuickNote("");
                 setAmountDraftByPlayerId({});
                 setCashOutDraftByPlayerId({});
@@ -692,7 +722,7 @@ export default function Home() {
                 localStorage.removeItem(LOCAL_STORAGE_KEY);
               }}
             >
-              Reset
+              New Game
             </button>
 
             {view === "setup" ? (
@@ -700,9 +730,7 @@ export default function Home() {
                 type="button"
                 disabled={!canStart || isStarting}
                 className="w-full rounded-xl bg-emerald-500 px-4 py-2 text-sm font-medium text-emerald-950 shadow-lg shadow-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto"
-                title={
-                  canStart ? "Start game" : "Add at least 2 players to continue"
-                }
+                title={canStart ? "Start game" : "Add at least 2 players to continue"}
                 onClick={async () => {
                   if (!canStart) return;
                   setIsStarting(true);
@@ -787,9 +815,7 @@ export default function Home() {
             <section className="lg:col-span-2">
               <div className="rounded-2xl border border-white/10 bg-white/5 p-5 shadow-xl shadow-black/20 backdrop-blur">
                 <h2 className="text-base font-semibold">Session</h2>
-                <p className="mt-1 text-sm text-neutral-300">
-                  Give it a name (optional) and choose your currency.
-                </p>
+                <p className="mt-1 text-sm text-neutral-300">Give it a name (optional).</p>
 
                 <div className="mt-5 space-y-4">
                   <label className="block space-y-2">
@@ -802,48 +828,131 @@ export default function Home() {
                     />
                   </label>
 
-                  <label className="block space-y-2">
-                    <span className="text-sm text-neutral-200">Currency</span>
-                    <div className="relative">
-                      <select
-                        value={currency}
-                        onChange={(e) => setCurrency(e.target.value as Currency)}
-                        className="w-full appearance-none rounded-xl border border-white/10 bg-neutral-950/40 px-3 py-2 pr-10 text-sm text-neutral-50 outline-none focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-400/20"
-                      >
-                        {CURRENCY_OPTIONS.map((c) => (
-                          <option key={c.code} value={c.code}>
-                            {c.label}
-                          </option>
-                        ))}
-                      </select>
-                      <div className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-neutral-400">
-                        ▾
-                      </div>
-                    </div>
-                    <div className="text-xs text-neutral-400">
-                      All amounts will be shown in{" "}
-                      <span className="font-medium text-neutral-200">
-                        {currencySymbol} ({currency})
-                      </span>
-                      .
-                    </div>
-                  </label>
-
                   <div className="rounded-xl border border-white/10 bg-neutral-950/30 p-4">
                     <div className="text-xs text-neutral-400">Preview</div>
                     <div className="mt-1 text-sm text-neutral-100">
-                      <span className="font-semibold">
-                        {sessionName.trim() || "Poker Night"}
-                      </span>{" "}
-                      • {players.length} player{players.length === 1 ? "" : "s"}
+                      <span className="font-semibold">{sessionName.trim() || "Poker Night"}</span> •{" "}
+                      {playersCountForPreview} player{playersCountForPreview === 1 ? "" : "s"} •{" "}
+                      {currencySymbol}
                     </div>
                   </div>
                 </div>
               </div>
             </section>
 
-            {/* NEW: Recent sessions (this device) */}
-            <section className="lg:col-span-2">
+            {/* Players card */}
+            <section className="lg:col-span-3">
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-5 shadow-xl shadow-black/20 backdrop-blur">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <h2 className="text-base font-semibold">Players</h2>
+                    <p className="mt-1 text-sm text-neutral-300">Add/remove players anytime.</p>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="w-full rounded-xl bg-white/10 px-3 py-2 text-sm text-neutral-100 hover:bg-white/15 sm:w-auto"
+                    onClick={() => {
+                      setPlayers((prev) => [{ id: newId(), name: "" }, ...prev]);
+                      debug("[Add player] Added new player to top");
+                    }}
+                    disabled={isLocked}
+                    title={isLocked ? "Session is finalized/settled" : undefined}
+                  >
+                    + Add player
+                  </button>
+                </div>
+
+                <div className="mt-5 space-y-3">
+                  {players.map((p, idx) => {
+                    const label = p.name.trim() ? p.name.trim() : `Player ${idx + 1}`;
+                    return (
+                      <div
+                        key={p.id}
+                        className="group rounded-2xl border border-white/10 bg-neutral-950/30 p-4"
+                      >
+                        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-white/10 to-white/5">
+                              <div className="absolute inset-0 flex items-center justify-center text-sm font-semibold text-neutral-100">
+                                {initials(p.name)}
+                              </div>
+                            </div>
+
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium text-neutral-100">
+                                {label}
+                              </div>
+                              <div className="text-xs text-neutral-400">Player {idx + 1}</div>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-neutral-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto"
+                            disabled={players.length <= 1 || isLocked}
+                            title={isLocked ? "Session is finalized/settled" : undefined}
+                            onClick={() => {
+                              if (isLocked) return;
+                              setPlayers((prev) => prev.filter((x) => x.id !== p.id));
+                              setBuyIns((prev) => prev.filter((b) => b.playerId !== p.id));
+                              setAmountDraftByPlayerId((prev) => {
+                                const copy = { ...prev };
+                                delete copy[p.id];
+                                return copy;
+                              });
+                              setCashOutDraftByPlayerId((prev) => {
+                                const copy = { ...prev };
+                                delete copy[p.id];
+                                return copy;
+                              });
+                              if (quickPlayerId === p.id) setQuickPlayerId("");
+                            }}
+                          >
+                            Remove
+                          </button>
+                        </div>
+
+                        <div className="mt-4 grid gap-3 md:grid-cols-2">
+                          <label className="block space-y-2 md:col-span-2">
+                            <span className="text-xs text-neutral-300">Name</span>
+                            <input
+                              value={p.name}
+                              disabled={isLocked}
+                              onChange={(e) =>
+                                setPlayers((prev) =>
+                                  prev.map((x) =>
+                                    x.id === p.id ? { ...x, name: e.target.value } : x
+                                  )
+                                )
+                              }
+                              placeholder="e.g. Taylor"
+                              className="w-full rounded-xl border border-white/10 bg-neutral-950/40 px-3 py-2 text-sm text-neutral-50 placeholder:text-neutral-500 outline-none focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {isLocked ? (
+                  <div className="mt-5 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100">
+                    This session is{" "}
+                    <span className="font-semibold">{isSettled ? "settled" : "finalized"}</span>.
+                    Editing players is disabled.
+                  </div>
+                ) : !canStart ? (
+                  <div className="mt-5 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100">
+                    Add at least <span className="font-semibold">2 players</span> with names to
+                    start tracking buy-ins.
+                  </div>
+                ) : null}
+              </div>
+            </section>
+
+            {/* Recent sessions (moved to bottom) */}
+            <section className="lg:col-span-5">
               <div className="rounded-2xl border border-white/10 bg-white/5 p-5 shadow-xl shadow-black/20 backdrop-blur">
                 <div className="flex items-start justify-between gap-4">
                   <div>
@@ -883,7 +992,7 @@ export default function Home() {
                               {s.name}
                             </div>
                             <div className="mt-1 text-xs text-neutral-400">
-                              {s.currency} • {s.id.slice(0, 8)}… •{" "}
+                              {currencySymbol} • {s.id.slice(0, 8)}… •{" "}
                               {new Date(s.lastOpenedAtIso).toLocaleString()}
                             </div>
                           </div>
@@ -920,9 +1029,7 @@ export default function Home() {
                               const url = new URL(window.location.href);
                               url.searchParams.set("s", s.id);
                               url.searchParams.set("t", s.token);
-                              void navigator.clipboard
-                                .writeText(url.toString())
-                                .catch(() => {});
+                              void navigator.clipboard.writeText(url.toString()).catch(() => {});
                             }}
                           >
                             Copy link
@@ -932,136 +1039,6 @@ export default function Home() {
                     ))
                   )}
                 </div>
-              </div>
-            </section>
-
-            {/* Players card */}
-            <section className="lg:col-span-3">
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-5 shadow-xl shadow-black/20 backdrop-blur">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
-                    <h2 className="text-base font-semibold">Players</h2>
-                    <p className="mt-1 text-sm text-neutral-300">
-                      Add/remove players anytime.
-                    </p>
-                  </div>
-
-                  <button
-                    type="button"
-                    className="w-full rounded-xl bg-white/10 px-3 py-2 text-sm text-neutral-100 hover:bg-white/15 sm:w-auto"
-                    onClick={() =>
-                      setPlayers((prev) => [...prev, { id: newId(), name: "" }])
-                    }
-                    disabled={isLocked}
-                    title={isLocked ? "Session is finalized/settled" : undefined}
-                  >
-                    + Add player
-                  </button>
-                </div>
-
-                <div className="mt-5 space-y-3">
-                  {players.map((p, idx) => {
-                    const label = p.name.trim()
-                      ? p.name.trim()
-                      : `Player ${idx + 1}`;
-                    return (
-                      <div
-                        key={p.id}
-                        className="group rounded-2xl border border-white/10 bg-neutral-950/30 p-4"
-                      >
-                        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                          <div className="flex items-center gap-3">
-                            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-white/10 to-white/5">
-                              <div className="absolute inset-0 flex items-center justify-center text-sm font-semibold text-neutral-100">
-                                {initials(p.name)}
-                              </div>
-                            </div>
-
-                            <div className="min-w-0">
-                              <div className="truncate text-sm font-medium text-neutral-100">
-                                {label}
-                              </div>
-                              <div className="text-xs text-neutral-400">
-                                Player {idx + 1}
-                              </div>
-                            </div>
-                          </div>
-
-                          <button
-                            type="button"
-                            className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-neutral-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto"
-                            disabled={players.length <= 1 || isLocked}
-                            title={
-                              isLocked ? "Session is finalized/settled" : undefined
-                            }
-                            onClick={() => {
-                              if (isLocked) return;
-                              setPlayers((prev) =>
-                                prev.filter((x) => x.id !== p.id)
-                              );
-                              setBuyIns((prev) =>
-                                prev.filter((b) => b.playerId !== p.id)
-                              );
-                              setAmountDraftByPlayerId((prev) => {
-                                const copy = { ...prev };
-                                delete copy[p.id];
-                                return copy;
-                              });
-                              setCashOutDraftByPlayerId((prev) => {
-                                const copy = { ...prev };
-                                delete copy[p.id];
-                                return copy;
-                              });
-                              if (quickPlayerId === p.id) setQuickPlayerId("");
-                            }}
-                          >
-                            Remove
-                          </button>
-                        </div>
-
-                        <div className="mt-4 grid gap-3 md:grid-cols-2">
-                          <label className="block space-y-2 md:col-span-2">
-                            <span className="text-xs text-neutral-300">Name</span>
-                            <input
-                              value={p.name}
-                              disabled={isLocked}
-                              onChange={(e) =>
-                                setPlayers((prev) =>
-                                  prev.map((x) =>
-                                    x.id === p.id
-                                      ? { ...x, name: e.target.value }
-                                      : x
-                                  )
-                                )
-                              }
-                              placeholder="e.g. Taylor"
-                              className="w-full rounded-xl border border-white/10 bg-neutral-950/40 px-3 py-2 text-sm text-neutral-50 placeholder:text-neutral-500 outline-none focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-50"
-                            />
-                          </label>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {isLocked ? (
-                  <div className="mt-5 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100">
-                    This session is{" "}
-                    <span className="font-semibold">
-                      {isSettled ? "settled" : "finalized"}
-                    </span>
-                    . Editing players is disabled.
-                  </div>
-                ) : !canStart ? (
-                  <div className="mt-5 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100">
-                    Add at least <span className="font-semibold">2 players</span>{" "}
-                    with names to start tracking buy-ins.
-                  </div>
-                ) : (
-                  <div className="mt-5 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">
-                    Ready. Next we'll add the in-game screen for buy-ins per player.
-                  </div>
-                )}
               </div>
             </section>
           </div>
@@ -1075,9 +1052,7 @@ export default function Home() {
                     <h2 className="text-base font-semibold">{sessionTitle}</h2>
                     <p className="mt-1 text-sm text-neutral-300">
                       Currency:{" "}
-                      <span className="font-medium text-neutral-100">
-                        {currencySymbol} ({currency})
-                      </span>
+                      <span className="font-medium text-neutral-100">{currencySymbol}</span>
                     </p>
                   </div>
                   <div className="rounded-xl border border-white/10 bg-neutral-950/30 px-3 py-2 text-right">
@@ -1127,7 +1102,7 @@ export default function Home() {
                         inputMode="decimal"
                         value={quickAmount}
                         onChange={(e) => setQuickAmount(e.target.value)}
-                        placeholder="50"
+                        placeholder={DEFAULT_BUY_IN}
                         className="w-full rounded-xl border border-white/10 bg-neutral-950/40 px-3 py-2 text-sm text-neutral-50 placeholder:text-neutral-500 outline-none focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-400/20"
                       />
                     </label>
@@ -1145,15 +1120,13 @@ export default function Home() {
                     <button
                       type="button"
                       className="w-full rounded-xl bg-emerald-500 px-4 py-2 text-sm font-medium text-emerald-950 shadow-lg shadow-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
-                      disabled={
-                        isLocked || !quickPlayerId || !parseAmountToCents(quickAmount)
-                      }
+                      disabled={isLocked || !quickPlayerId || !parseAmountToCents(quickAmount)}
                       onClick={() => {
                         if (isLocked) return;
                         const cents = parseAmountToCents(quickAmount);
                         if (!quickPlayerId || !cents) return;
                         addBuyIn(quickPlayerId, cents, quickNote);
-                        setQuickAmount("");
+                        setQuickAmount(DEFAULT_BUY_IN);
                         setQuickNote("");
                       }}
                     >
@@ -1176,9 +1149,7 @@ export default function Home() {
                   </div>
                   <div className="rounded-xl border border-white/10 bg-neutral-950/30 px-3 py-2 text-right">
                     <div className="text-[11px] text-neutral-400">Entries</div>
-                    <div className="text-sm font-semibold text-neutral-50">
-                      {buyIns.length}
-                    </div>
+                    <div className="text-sm font-semibold text-neutral-50">{buyIns.length}</div>
                   </div>
                 </div>
 
@@ -1234,7 +1205,7 @@ export default function Home() {
                                         [p.id]: e.target.value,
                                       }))
                                     }
-                                    placeholder="50"
+                                    placeholder={DEFAULT_BUY_IN}
                                     className="w-32 rounded-xl border border-white/10 bg-neutral-950/40 py-2 pl-7 pr-3 text-sm text-neutral-50 placeholder:text-neutral-500 outline-none focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-400/20"
                                   />
                                 </div>
@@ -1248,10 +1219,7 @@ export default function Home() {
                                     const cents = parseAmountToCents(amountDraft);
                                     if (!cents) return;
                                     addBuyIn(p.id, cents);
-                                    setAmountDraftByPlayerId((prev) => ({
-                                      ...prev,
-                                      [p.id]: "",
-                                    }));
+                                    setAmountDraftByPlayerId((prev) => ({ ...prev, [p.id]: "" }));
                                   }}
                                 >
                                   Add
@@ -1333,7 +1301,7 @@ export default function Home() {
                   <div className="rounded-xl border border-white/10 bg-neutral-950/30 px-3 py-2 text-right">
                     <div className="text-[11px] text-neutral-400">Currency</div>
                     <div className="text-sm font-semibold text-neutral-50">
-                      {currencySymbol} ({currency})
+                      {currencySymbol}
                     </div>
                   </div>
                 </div>
@@ -1362,9 +1330,7 @@ export default function Home() {
                   >
                     <div
                       className={`text-xs ${
-                        totalNetCents === 0
-                          ? "text-emerald-100/80"
-                          : "text-amber-100/80"
+                        totalNetCents === 0 ? "text-emerald-100/80" : "text-amber-100/80"
                       }`}
                     >
                       Reconciliation (should be 0)
@@ -1404,10 +1370,8 @@ export default function Home() {
                 {isLocked ? (
                   <div className="mt-4 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100">
                     This session is{" "}
-                    <span className="font-semibold">
-                      {isSettled ? "settled" : "finalized"}
-                    </span>
-                    . Cash-outs are locked.
+                    <span className="font-semibold">{isSettled ? "settled" : "finalized"}</span>.{" "}
+                    Cash-outs are locked.
                   </div>
                 ) : null}
 
@@ -1525,9 +1489,7 @@ export default function Home() {
                 >
                   <div
                     className={`text-xs ${
-                      totalNetCents === 0
-                        ? "text-emerald-100/80"
-                        : "text-amber-100/80"
+                      totalNetCents === 0 ? "text-emerald-100/80" : "text-amber-100/80"
                     }`}
                   >
                     Reconciliation
@@ -1588,9 +1550,7 @@ export default function Home() {
                   </div>
                   <div className="rounded-xl border border-white/10 bg-neutral-950/30 px-3 py-2 text-right">
                     <div className="text-[11px] text-neutral-400">Payments</div>
-                    <div className="text-sm font-semibold text-neutral-50">
-                      {payments.length}
-                    </div>
+                    <div className="text-sm font-semibold text-neutral-50">{payments.length}</div>
                   </div>
                 </div>
 
@@ -1609,22 +1569,16 @@ export default function Home() {
                     ) : (
                       payments.map((pay) => {
                         const from =
-                          players.find((x) => x.id === pay.fromPlayerId)?.name.trim() ??
-                          "—";
+                          players.find((x) => x.id === pay.fromPlayerId)?.name.trim() ?? "—";
                         const to =
-                          players.find((x) => x.id === pay.toPlayerId)?.name.trim() ??
-                          "—";
+                          players.find((x) => x.id === pay.toPlayerId)?.name.trim() ?? "—";
                         return (
                           <div
                             key={`${pay.fromPlayerId}_${pay.toPlayerId}_${pay.amountCents}`}
                             className="grid grid-cols-12 px-4 py-3 text-sm"
                           >
-                            <div className="col-span-5 font-medium text-neutral-100">
-                              {from}
-                            </div>
-                            <div className="col-span-5 font-medium text-neutral-100">
-                              {to}
-                            </div>
+                            <div className="col-span-5 font-medium text-neutral-100">{from}</div>
+                            <div className="col-span-5 font-medium text-neutral-100">{to}</div>
                             <div className="col-span-2 text-right font-semibold text-neutral-50">
                               {formatMoney(pay.amountCents, currency)}
                             </div>

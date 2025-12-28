@@ -42,6 +42,14 @@ type LocalSnapshot = {
   state: PersistedStateV1;
 };
 
+type KnownSession = {
+  id: string;
+  token: string;
+  name: string;
+  currency: Currency;
+  lastOpenedAtIso: string;
+};
+
 const CURRENCY_OPTIONS: Array<{ code: Currency; label: string; symbol: string }> =
   [
     { code: "USD", label: "US Dollar (USD)", symbol: "$" },
@@ -52,6 +60,7 @@ const CURRENCY_OPTIONS: Array<{ code: Currency; label: string; symbol: string }>
   ];
 
 const LOCAL_STORAGE_KEY = "poker:currentSession:v1";
+const KNOWN_SESSIONS_KEY = "poker:knownSessions:v1";
 
 function newId() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -90,6 +99,12 @@ function safeJsonParse<T>(raw: string | null): T | null {
   } catch {
     return null;
   }
+}
+
+function loadKnownSessions(): KnownSession[] {
+  const parsed = safeJsonParse<KnownSession[]>(localStorage.getItem(KNOWN_SESSIONS_KEY));
+  if (!parsed) return [];
+  return parsed.filter((s) => Boolean(s?.id) && Boolean(s?.token));
 }
 
 function isUuid(v: string) {
@@ -140,14 +155,40 @@ function computeSettlementPayments(
   return payments;
 }
 
+function generateSessionTokenHex(bytes = 16) {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  return Array.from(arr)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function toError(err: unknown): Error {
+  if (err instanceof Error) return err
+  if (typeof err === 'string') return new Error(err)
+
+  const maybeMessage = (err as { message?: unknown } | null)?.message
+  if (typeof maybeMessage === 'string') return new Error(maybeMessage)
+
+  try {
+    return new Error(JSON.stringify(err))
+  } catch {
+    return new Error(String(err))
+  }
+}
+
 export default function Home() {
+  // FIX: define sessionToken/sessionId BEFORE any useMemo/useEffect that reads them
+  const [sessionId, setSessionId] = React.useState<string | null>(null);
+  const [sessionToken, setSessionToken] = React.useState<string | null>(null);
+
   // two clients:
   // - anon: used to INSERT (allowed without token)
   // - authed-by-link: used for SELECT/UPDATE/DELETE (requires token)
   const supabaseAnon = React.useMemo(() => createClient(), []);
   const supabase = React.useMemo(
-    () => createClient(),
-    []
+    () => createClient(sessionToken ?? undefined),
+    [sessionToken]
   );
 
   const [view, setView] = React.useState<"setup" | "game" | "cashout" | "settle">(
@@ -177,13 +218,91 @@ export default function Home() {
 
   const [isFinalized, setIsFinalized] = React.useState(false);
   const [isSettled, setIsSettled] = React.useState(false);
-  const [sessionId, setSessionId] = React.useState<string | null>(null);
-  const [sessionToken, setSessionToken] = React.useState<string | null>(null);
   const [isStarting, setIsStarting] = React.useState(false);
   const [isSyncing, setIsSyncing] = React.useState(false);
   const [shareStatus, setShareStatus] = React.useState<
     "idle" | "copied" | "failed"
   >("idle");
+
+  const [knownSessions, setKnownSessions] = React.useState<KnownSession[]>([]);
+  const [loadSessionError, setLoadSessionError] = React.useState<string | null>(null);
+
+  // Load known sessions on mount
+  React.useEffect(() => {
+    setKnownSessions(loadKnownSessions());
+  }, []);
+
+  // Persist known sessions whenever they change
+  React.useEffect(() => {
+    localStorage.setItem(KNOWN_SESSIONS_KEY, JSON.stringify(knownSessions));
+  }, [knownSessions]);
+
+  const upsertKnownSession = React.useCallback(
+    (s: KnownSession) => {
+      setKnownSessions((prev) => {
+        const next = prev.filter((x) => x.id !== s.id);
+        next.unshift(s);
+        return next.slice(0, 25);
+      });
+    },
+    [setKnownSessions]
+  );
+
+  const removeKnownSession = React.useCallback(
+    (id: string) => {
+      setKnownSessions((prev) => prev.filter((x) => x.id !== id));
+    },
+    [setKnownSessions]
+  );
+
+  async function openSessionByIdAndToken(opts: {
+    id: string;
+    token: string;
+    targetView: "game" | "cashout" | "settle";
+  }) {
+    setLoadSessionError(null);
+
+    try {
+      const client = createClient(opts.token);
+      const { data, error } = await client
+        .from("poker_sessions")
+        .select("state, name, currency, updated_at")
+        .eq("id", opts.id)
+        .single();
+
+      if (error) throw toError(error)
+      if (!data) throw new Error('Session not found')
+
+      const state = data.state as PersistedStateV1;
+      if (!state || state.version !== 1) throw new Error("Unsupported session format");
+
+      setSessionId(opts.id);
+      setSessionToken(opts.token);
+
+      setSessionName(state.sessionName ?? (data.name ?? ""));
+      setCurrency((state.currency ?? (data.currency as Currency)) as Currency);
+      setPlayers(state.players ?? []);
+      setBuyIns(state.buyIns ?? []);
+      setCashOutDraftByPlayerId(state.cashOutDraftByPlayerId ?? {});
+      setIsFinalized(Boolean(state.isFinalized));
+      setIsSettled(Boolean(state.isSettled));
+
+      // user asked specifically to jump to cash-outs for older sessions
+      setView(opts.targetView);
+
+      upsertKnownSession({
+        id: opts.id,
+        token: opts.token,
+        name: (state.sessionName ?? data.name ?? "").trim() || "Poker Night",
+        currency: (state.currency ?? (data.currency as Currency)) as Currency,
+        lastOpenedAtIso: new Date().toISOString(),
+      });
+    } catch (e) {
+      setLoadSessionError(
+        e instanceof Error ? e.message : "Failed to load that session"
+      );
+    }
+  }
 
   const currencySymbol = React.useMemo(
     () => CURRENCY_OPTIONS.find((c) => c.code === currency)?.symbol ?? "$",
@@ -291,10 +410,20 @@ export default function Home() {
     const t = window.setTimeout(() => {
       const snap: LocalSnapshot = { sessionId, sessionToken, state: persistableState };
       localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(snap));
+
+      if (sessionId && sessionToken) {
+        upsertKnownSession({
+          id: sessionId,
+          token: sessionToken,
+          name: sessionName.trim() || "Poker Night",
+          currency,
+          lastOpenedAtIso: new Date().toISOString(),
+        });
+      }
     }, 250);
 
     return () => window.clearTimeout(t);
-  }, [persistableState, sessionId, sessionToken]);
+  }, [persistableState, sessionId, sessionToken, sessionName, currency, upsertKnownSession]);
 
   // Background sync to Supabase (debounced) — requires BOTH id + token
   React.useEffect(() => {
@@ -416,24 +545,41 @@ export default function Home() {
   async function ensureSessionRow(): Promise<{ id: string; token: string }> {
     if (sessionId && sessionToken) return { id: sessionId, token: sessionToken };
 
-    const { data, error } = await supabaseAnon
-      .from("poker_sessions")
-      .insert({
+    const token = sessionToken ?? generateSessionTokenHex(16);
+    const id = crypto.randomUUID(); // we generate the id so we don't need RETURNING
+
+    // Use a token-scoped client, but IMPORTANTLY: don't request "returning representation"
+    // (it can trigger SELECT RLS on the inserted row).
+    const client = createClient(token);
+
+    const { error } = await client.from("poker_sessions").insert(
+      {
+        id,
+        access_token: token,
         name: sessionName.trim() ? sessionName.trim() : null,
         currency,
         state: persistableState,
-      })
-      .select("id, access_token")
-      .single();
+      },
+      { returning: "minimal" }
+    );
 
-    if (error || !data?.id || !data.access_token) {
-      throw error ?? new Error("Failed to create session");
-    }
+    console.log(
+      `[ensureSessionRow] Insert result. error: ${JSON.stringify(error)}`
+    )
+    if (error) throw toError(error)
 
-    setSessionId(data.id);
-    setSessionToken(data.access_token);
+    setSessionId(id);
+    setSessionToken(token);
 
-    return { id: data.id, token: data.access_token };
+    upsertKnownSession({
+      id,
+      token,
+      name: sessionName.trim() || "Poker Night",
+      currency,
+      lastOpenedAtIso: new Date().toISOString(),
+    });
+
+    return { id, token };
   }
 
   function addBuyIn(playerId: string, amountCents: number, note?: string) {
@@ -692,6 +838,99 @@ export default function Home() {
                       • {players.length} player{players.length === 1 ? "" : "s"}
                     </div>
                   </div>
+                </div>
+              </div>
+            </section>
+
+            {/* NEW: Recent sessions (this device) */}
+            <section className="lg:col-span-2">
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-5 shadow-xl shadow-black/20 backdrop-blur">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h2 className="text-base font-semibold">Recent sessions</h2>
+                    <p className="mt-1 text-sm text-neutral-300">
+                      Saved on this device. Open directly to cash-outs.
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-neutral-950/30 px-3 py-2 text-right">
+                    <div className="text-[11px] text-neutral-400">Count</div>
+                    <div className="text-sm font-semibold text-neutral-50">
+                      {knownSessions.length}
+                    </div>
+                  </div>
+                </div>
+
+                {loadSessionError ? (
+                  <div className="mt-4 rounded-xl border border-rose-400/20 bg-rose-400/10 p-3 text-sm text-rose-100">
+                    {loadSessionError}
+                  </div>
+                ) : null}
+
+                <div className="mt-4 space-y-3">
+                  {knownSessions.length === 0 ? (
+                    <div className="rounded-xl border border-white/10 bg-neutral-950/30 p-4 text-sm text-neutral-400">
+                      No recent sessions yet. Start a game to create one.
+                    </div>
+                  ) : (
+                    knownSessions.map((s) => (
+                      <div
+                        key={s.id}
+                        className="rounded-2xl border border-white/10 bg-neutral-950/30 p-4"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-semibold text-neutral-100">
+                              {s.name}
+                            </div>
+                            <div className="mt-1 text-xs text-neutral-400">
+                              {s.currency} • {s.id.slice(0, 8)}… •{" "}
+                              {new Date(s.lastOpenedAtIso).toLocaleString()}
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-neutral-200 hover:bg-white/10"
+                            onClick={() => removeKnownSession(s.id)}
+                            title="Remove from this device"
+                          >
+                            Remove
+                          </button>
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            className="rounded-xl bg-white/10 px-3 py-2 text-xs font-medium text-neutral-100 hover:bg-white/15"
+                            onClick={() =>
+                              void openSessionByIdAndToken({
+                                id: s.id,
+                                token: s.token,
+                                targetView: "cashout",
+                              })
+                            }
+                          >
+                            Open cash-outs
+                          </button>
+
+                          <button
+                            type="button"
+                            className="rounded-xl bg-white/10 px-3 py-2 text-xs font-medium text-neutral-100 hover:bg-white/15"
+                            onClick={() => {
+                              const url = new URL(window.location.href);
+                              url.searchParams.set("s", s.id);
+                              url.searchParams.set("t", s.token);
+                              void navigator.clipboard
+                                .writeText(url.toString())
+                                .catch(() => {});
+                            }}
+                          >
+                            Copy link
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             </section>
@@ -1424,16 +1663,6 @@ export default function Home() {
             </section>
           </div>
         )}
-
-        <footer className="mt-10 text-xs text-neutral-500">
-          {view === "setup"
-            ? "Step 1 implemented: session setup, currency selection, and player management (frontend only)."
-            : view === "game"
-              ? "Step 2 implemented: buy-in tracking with per-player totals + table total (frontend only)."
-              : view === "cashout"
-                ? "Step 3 implemented: cash-out entry + net profit/loss calculation with reconciliation check (frontend only)."
-                : "Step 4 implemented: settlement payments + session finalization and settled status (frontend only)."}
-        </footer>
       </div>
     </div>
   );

@@ -1,0 +1,5 @@
+- Game setup & player list: Allow a user to create a new “Poker Night” session, name it (optional), select a currency, and add/remove players (with simple identifiers like name and optional avatar) before and during the game.
+- Buy-in tracking during play: For each player, allow recording any number of buy-ins with amount and timestamp (optional notes), and show each player’s running total buy-ins and overall table total.
+- End-of-game cash count entry: At game end, allow each player to enter their final cash-out amount (how much money they are leaving the table with), and allow edits until the game is finalized.
+- Results calculation & summary: Automatically compute each player’s net result (cash-out minus total buy-ins) and clearly label who is “up” and “down,” including a session-level reconciliation check that the table balances (total net = 0) or flags discrepancies.
+- “Who owes who” settlement view: Provide a simplified settlement summary that converts results into a clear list of payments (e.g., “Alex pays Jordan $25”) so the group can settle efficiently, with the ability to mark the session as settled/final.

@@ -263,15 +263,15 @@ export default function Home() {
     setLoadSessionError(null);
 
     try {
-      const client = createClient(opts.token);
+      const client = createClient({ sessionToken: opts.token });
       const { data, error } = await client
         .from("poker_sessions")
         .select("state, name, currency, updated_at")
         .eq("id", opts.id)
-        .single();
+        .maybeSingle();
 
       if (error) throw toError(error)
-      if (!data) throw new Error('Session not found')
+      if (!data) throw new Error('Session not found (invalid id/token or missing access_token)')
 
       const state = data.state as PersistedStateV1;
       if (!state || state.version !== 1) throw new Error("Unsupported session format");
@@ -550,13 +550,13 @@ export default function Home() {
 
     // Use a token-scoped client, but IMPORTANTLY: don't request "returning representation"
     // (it can trigger SELECT RLS on the inserted row).
-    const client = createClient(token);
+    const client = createClient({ sessionToken: token });
 
     const { error } = await client.from("poker_sessions").insert(
       {
         id,
         access_token: token,
-        name: sessionName.trim() ? sessionName.trim() : null,
+        name: sessionName || null,
         currency,
         state: persistableState,
       },

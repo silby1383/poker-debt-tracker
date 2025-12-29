@@ -1,31 +1,37 @@
-import { cookies } from 'next/headers'
+import { cookies } from "next/headers";
+import { createServerClient } from "@supabase/ssr";
+import { type Database } from "@/database.types";
 
-import { createServerClient } from '@supabase/ssr'
-import { type Database } from '@/database.types';
+type CookieStore = Awaited<ReturnType<typeof cookies>>;
+type CookieToSet = {
+  name: string;
+  value: string;
+  options?: Parameters<CookieStore["set"]>[2];
+};
 
 export async function createClient() {
-  const cookieStore = await cookies()
+  const cookieStore = await cookies();
 
-  return createServerClient<Database>(
+  // Keep schema generic ('public') so table types don't become `never`.
+  // Don't annotate return type with SupabaseClient<> due to generic-arity mismatch.
+  return createServerClient<Database, "public">(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
         getAll() {
-          return cookieStore.getAll()
+          return cookieStore.getAll();
         },
-        setAll(cookiesToSet) {
+        setAll(cookiesToSet: CookieToSet[]) {
           try {
             cookiesToSet.forEach(({ name, value, options }) =>
               cookieStore.set(name, value, options)
-            )
+            );
           } catch {
-            // The `setAll` method was called from a Server Component.
-            // This can be ignored if you have middleware refreshing
-            // user sessions.
+            // ignore (Server Components can't set cookies)
           }
         },
       },
     }
-  )
+  );
 }

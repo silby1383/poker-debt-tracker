@@ -1168,153 +1168,64 @@ export default function Home() {
 
         {view === "setup" ? (
           <div className="mt-8 grid gap-6 lg:grid-cols-5">
-            {/* Session card */}
-            <section className="lg:col-span-2">
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-5 shadow-xl shadow-black/20 backdrop-blur">
-                <h2 className="text-base font-semibold">Session</h2>
-                <p className="mt-1 text-sm text-neutral-300">Give it a name (optional).</p>
-
-                <div className="mt-5 space-y-4">
-                  <label className="block space-y-2">
-                    <span className="text-sm text-neutral-200">Session name</span>
-                    <input
-                      value={sessionName}
-                      onChange={(e) => setSessionName(e.target.value)}
-                      placeholder="Friday Night Hold'em"
-                      className="w-full rounded-xl border border-white/10 bg-neutral-950/40 px-3 py-2 text-sm text-neutral-50 placeholder:text-neutral-500 outline-none ring-0 focus:border-emerald-400/50 focus:outline-none focus:ring-2 focus:ring-emerald-400/20"
-                    />
-                  </label>
-
-                  <div className="rounded-xl border border-white/10 bg-neutral-950/30 p-4">
-                    <div className="text-xs text-neutral-400">Preview</div>
-                    <div className="mt-1 text-sm text-neutral-100">
-                      <span className="font-semibold">{sessionName.trim() || "Poker Night"}</span> •{" "}
-                      {playersCountForPreview} player{playersCountForPreview === 1 ? "" : "s"} •{" "}
-                      {currencySymbol}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            {/* Players card (desktop unchanged) */}
-            <section className="hidden md:block lg:col-span-3">
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-5 shadow-xl shadow-black/20 backdrop-blur">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
-                    <h2 className="text-base font-semibold">Players</h2>
-                    <p className="mt-1 text-sm text-neutral-300">Add/remove players anytime.</p>
-                  </div>
-
-                  <button
-                    type="button"
-                    className="w-full rounded-xl bg-white/10 px-3 py-2 text-sm text-neutral-100 hover:bg-white/15 sm:w-auto"
-                    onClick={() => {
-                      setPlayers((prev) => [{ id: newId(), name: "" }, ...prev]);
-                      debug("[Add player] Added new player to top");
-                    }}
-                    disabled={isLocked}
-                    title={isLocked ? "Session is finalized/settled" : undefined}
-                  >
-                    + Add player
-                  </button>
-                </div>
-
-                <div className="mt-5 space-y-3">
-                  {players.map((p, idx) => {
-                    const label = p.name.trim() ? p.name.trim() : `Player ${idx + 1}`;
-                    return (
-                      <div
-                        key={p.id}
-                        className="group rounded-2xl border border-white/10 bg-neutral-950/30 p-4"
-                      >
-                        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                          <div className="flex items-center gap-3">
-                            <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-white/10 to-white/5">
-                              <div className="absolute inset-0 flex items-center justify-center text-sm font-semibold text-neutral-100">
-                                {initials(p.name)}
-                              </div>
-                            </div>
-
-                            <div className="min-w-0">
-                              <div className="truncate text-sm font-medium text-neutral-100">
-                                {label}
-                              </div>
-                              <div className="text-xs text-neutral-400">Player {idx + 1}</div>
-                            </div>
-                          </div>
-
-                          <button
-                            type="button"
-                            className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-neutral-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto"
-                            disabled={players.length <= 1 || isLocked}
-                            title={isLocked ? "Session is finalized/settled" : undefined}
-                            onClick={() => {
-                              if (isLocked) return;
-                              setPlayers((prev) => prev.filter((x) => x.id !== p.id));
-                              setBuyIns((prev) => prev.filter((b) => b.playerId !== p.id));
-                              setAmountDraftByPlayerId((prev) => {
-                                const copy = { ...prev };
-                                delete copy[p.id];
-                                return copy;
-                              });
-                              setCashOutDraftByPlayerId((prev) => {
-                                const copy = { ...prev };
-                                delete copy[p.id];
-                                return copy;
-                              });
-                              if (quickPlayerId === p.id) setQuickPlayerId("");
-                            }}
-                          >
-                            Remove
-                          </button>
-                        </div>
-
-                        <div className="mt-4 grid gap-3 md:grid-cols-2">
-                          <label className="block space-y-2 md:col-span-2">
-                            <span className="text-xs text-neutral-300">Name</span>
-                            <input
-                              value={p.name}
-                              disabled={isLocked}
-                              onChange={(e) =>
-                                setPlayers((prev) =>
-                                  prev.map((x) =>
-                                    x.id === p.id ? { ...x, name: e.target.value } : x
-                                  )
-                                )
-                              }
-                              placeholder="e.g. Taylor"
-                              className="w-full rounded-xl border border-white/10 bg-neutral-950/40 px-3 py-2 text-sm text-neutral-50 placeholder:text-neutral-500 outline-none focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-50"
-                            />
-                          </label>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {isLocked ? (
-                  <div className="mt-5 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100">
-                    This session is{" "}
-                    <span className="font-semibold">{isSettled ? "settled" : "finalized"}</span>.
-                    Editing players is disabled.
-                  </div>
-                ) : !canStart ? (
-                  <div className="mt-5 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100">
-                    Add at least <span className="font-semibold">2 players</span> with names to
-                    start tracking buy-ins.
-                  </div>
-                ) : null}
-              </div>
-            </section>
-
-            {/* Players card (mobile compact) */}
-            <section className="md:hidden lg:col-span-3">
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-5 shadow-xl shadow-black/20 backdrop-blur">
+            {/* Session card (desktop compact) */}
+            <section className="hidden md:block lg:col-span-2">
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-xl shadow-black/20 backdrop-blur">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <h2 className="text-base font-semibold">Players</h2>
-                    <p className="mt-1 text-sm text-neutral-300">Tap a player to edit.</p>
+                    <h2 className="text-sm font-semibold text-neutral-100">Session</h2>
+                    <p className="mt-0.5 text-xs text-neutral-400">Optional name.</p>
+                  </div>
+                  <div className="text-xs text-neutral-400">{currencySymbol}</div>
+                </div>
+
+                <div className="mt-3">
+                  <input
+                    value={sessionName}
+                    onChange={(e) => setSessionName(e.target.value)}
+                    placeholder="Friday Night Hold'em"
+                    className="w-full rounded-xl border border-white/10 bg-neutral-950/40 px-3 py-2 text-sm text-neutral-50 placeholder:text-neutral-500 outline-none ring-0 focus:border-emerald-400/50 focus:outline-none focus:ring-2 focus:ring-emerald-400/20"
+                  />
+                </div>
+
+                <div className="mt-3 text-xs text-neutral-400">
+                  <span className="text-neutral-200 font-medium">
+                    {sessionName.trim() || "Poker Night"}
+                  </span>{" "}
+                  • {players.length} player{players.length === 1 ? "" : "s"} • {currencySymbol}
+                </div>
+              </div>
+            </section>
+
+            {/* Session card (mobile compact) */}
+            <section className="md:hidden lg:col-span-2">
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-xl shadow-black/20 backdrop-blur">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-neutral-100">Session</h2>
+                    <p className="mt-0.5 text-xs text-neutral-400">Optional name.</p>
+                  </div>
+                  <div className="text-xs text-neutral-400">{currencySymbol}</div>
+                </div>
+
+                <div className="mt-3">
+                  <input
+                    value={sessionName}
+                    onChange={(e) => setSessionName(e.target.value)}
+                    placeholder="Friday Night Hold'em"
+                    className="w-full rounded-xl border border-white/10 bg-neutral-950/40 px-3 py-2 text-sm text-neutral-50 placeholder:text-neutral-500 outline-none focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-400/20"
+                  />
+                </div>
+              </div>
+            </section>
+
+            {/* Players card (desktop compact + inline editable rows) */}
+            <section className="hidden md:block lg:col-span-3">
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-xl shadow-black/20 backdrop-blur">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-neutral-100">Players</h2>
+                    <p className="mt-0.5 text-xs text-neutral-400">Edit names inline.</p>
                   </div>
 
                   <button
@@ -1322,7 +1233,8 @@ export default function Home() {
                     className="rounded-xl bg-white/10 px-3 py-2 text-sm text-neutral-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
                     onClick={() => {
                       if (isLocked) return;
-                      setPlayers((prev) => [...prev, { id: newId(), name: "" }]);
+                      // add to TOP (requested)
+                      setPlayers((prev) => [{ id: newId(), name: "" }, ...prev]);
                     }}
                     disabled={isLocked}
                     title={isLocked ? "Session is finalized/settled" : undefined}
@@ -1331,49 +1243,133 @@ export default function Home() {
                   </button>
                 </div>
 
-                <div className="mt-4 overflow-hidden rounded-2xl border border-white/10">
-                  {players.map((p, idx) => {
-                    const label = p.name.trim() ? p.name.trim() : `Player ${idx + 1}`;
-                    return (
-                      <button
-                        key={p.id}
-                        type="button"
-                        className="flex w-full items-center justify-between gap-3 border-b border-white/10 bg-neutral-950/30 px-4 py-3 text-left last:border-b-0"
-                        onClick={() => setEditingPlayerId(p.id)}
-                        disabled={isLocked}
-                        title={isLocked ? "Session is finalized/settled" : "Edit player"}
-                      >
-                        <div className="flex min-w-0 items-center gap-3">
-                          <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-white/10 to-white/5">
-                            <div className="absolute inset-0 flex items-center justify-center text-sm font-semibold text-neutral-100">
-                              {initials(p.name)}
-                            </div>
-                          </div>
-
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium text-neutral-100">
-                              {label}
-                            </div>
-                            <div className="text-xs text-neutral-500">Player {idx + 1}</div>
-                          </div>
+                <div className="mt-4 space-y-2">
+                  {players.map((p, idx) => (
+                    <div
+                      key={p.id}
+                      className="flex items-center gap-3 rounded-2xl border border-white/10 bg-neutral-950/30 px-3 py-2"
+                    >
+                      <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-white/10 to-white/5">
+                        <div className="absolute inset-0 flex items-center justify-center text-sm font-semibold text-neutral-100">
+                          {initials(p.name)}
                         </div>
+                      </div>
 
-                        <div className="text-sm text-neutral-400">›</div>
+                      <div className="min-w-0 flex-1">
+                        <input
+                          value={p.name}
+                          disabled={isLocked}
+                          onChange={(e) =>
+                            setPlayers((prev) =>
+                              prev.map((x) => (x.id === p.id ? { ...x, name: e.target.value } : x))
+                            )
+                          }
+                          placeholder={`Player ${idx + 1}`}
+                          className="w-full rounded-xl border border-white/10 bg-neutral-950/40 px-3 py-2 text-sm text-neutral-50 placeholder:text-neutral-500 outline-none focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        />
+                        <div className="mt-1 text-[11px] text-neutral-500">Player {idx + 1}</div>
+                      </div>
+
+                      <button
+                        type="button"
+                        className="shrink-0 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-neutral-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled={isLocked || players.length <= 1}
+                        title={isLocked ? "Locked" : "Remove player"}
+                        onClick={() => removePlayer(p.id)}
+                      >
+                        Remove
                       </button>
-                    );
-                  })}
+                    </div>
+                  ))}
                 </div>
 
                 {isLocked ? (
                   <div className="mt-4 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100">
                     This session is{" "}
-                    <span className="font-semibold">{isSettled ? "settled" : "finalized"}</span>.
-                    Editing players is disabled.
+                    <span className="font-semibold">{isSettled ? "settled" : "finalized"}</span>. Editing
+                    players is disabled.
                   </div>
                 ) : !canStart ? (
                   <div className="mt-4 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100">
-                    Add at least <span className="font-semibold">2 players</span> with names to
-                    start tracking buy-ins.
+                    Add at least <span className="font-semibold">2 players</span> with names to start.
+                  </div>
+                ) : null}
+              </div>
+            </section>
+
+            {/* Players card (mobile compact + inline editable rows) */}
+            <section className="md:hidden lg:col-span-3">
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-xl shadow-black/20 backdrop-blur">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-neutral-100">Players</h2>
+                    <p className="mt-0.5 text-xs text-neutral-400">Edit names inline.</p>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="rounded-xl bg-white/10 px-3 py-2 text-sm text-neutral-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+                    onClick={() => {
+                      if (isLocked) return;
+                      // add to TOP (requested)
+                      setPlayers((prev) => [{ id: newId(), name: "" }, ...prev]);
+                    }}
+                    disabled={isLocked}
+                    title={isLocked ? "Session is finalized/settled" : undefined}
+                  >
+                    + Add
+                  </button>
+                </div>
+
+                <div className="mt-4 space-y-2">
+                  {players.map((p, idx) => (
+                    <div
+                      key={p.id}
+                      className="flex items-center gap-3 rounded-2xl border border-white/10 bg-neutral-950/30 px-3 py-2"
+                    >
+                      <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-white/10 to-white/5">
+                        <div className="absolute inset-0 flex items-center justify-center text-sm font-semibold text-neutral-100">
+                          {initials(p.name)}
+                        </div>
+                      </div>
+
+                      <div className="min-w-0 flex-1">
+                        <input
+                          value={p.name}
+                          disabled={isLocked}
+                          onChange={(e) =>
+                            setPlayers((prev) =>
+                              prev.map((x) => (x.id === p.id ? { ...x, name: e.target.value } : x))
+                            )
+                          }
+                          placeholder={`Player ${idx + 1}`}
+                          className="w-full rounded-xl border border-white/10 bg-neutral-950/40 px-3 py-2 text-sm text-neutral-50 placeholder:text-neutral-500 outline-none focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        />
+                        <div className="mt-1 text-[11px] text-neutral-500">Player {idx + 1}</div>
+                      </div>
+
+                      <button
+                        type="button"
+                        className="shrink-0 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-neutral-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled={isLocked || players.length <= 1}
+                        title={isLocked ? "Locked" : "Remove player"}
+                        onClick={() => removePlayer(p.id)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                {isLocked ? (
+                  <div className="mt-4 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100">
+                    This session is{" "}
+                    <span className="font-semibold">{isSettled ? "settled" : "finalized"}</span>. Editing
+                    players is disabled.
+                  </div>
+                ) : !canStart ? (
+                  <div className="mt-4 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100">
+                    Add at least <span className="font-semibold">2 players</span> with names to start.
                   </div>
                 ) : null}
               </div>
